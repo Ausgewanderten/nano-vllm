@@ -40,10 +40,13 @@ class LLMEngine:
         for p in self.ps:
             p.join()
 
-    def add_request(self, prompt: str | list[int], sampling_params: SamplingParams):
+    def _prepare_request(self, prompt: str | list[int], sampling_params: SamplingParams) -> Sequence:
         if isinstance(prompt, str):
             prompt = self.tokenizer.encode(prompt)
-        seq = Sequence(prompt, sampling_params)
+        return Sequence(prompt, sampling_params)
+
+    def add_request(self, prompt: str | list[int], sampling_params: SamplingParams):
+        seq = self._prepare_request(prompt, sampling_params)
         self.scheduler.add(seq)
 
     def step(self):
@@ -63,11 +66,14 @@ class LLMEngine:
         sampling_params: SamplingParams | list[SamplingParams],
         use_tqdm: bool = True,
     ) -> list[str]:
-        pbar = tqdm(total=len(prompts), desc="Generating", dynamic_ncols=True, disable=not use_tqdm)
+        """Prepare the entire batch before admission so input errors leave no queued requests."""
         if not isinstance(sampling_params, list):
             sampling_params = [sampling_params] * len(prompts)
-        for prompt, sp in zip(prompts, sampling_params):
-            self.add_request(prompt, sp)
+        prepared = [self._prepare_request(prompt, sp) for prompt, sp in zip(prompts, sampling_params)]
+        pbar = tqdm(total=len(prompts), desc="Generating", dynamic_ncols=True, disable=not use_tqdm)
+        for seq in prepared:
+            self.scheduler.add(seq)
+        del prepared  # Do not retain completed requests' prompts for the whole run.
         outputs = {}
         prefill_throughput = decode_throughput = 0.
         while not self.is_finished():
